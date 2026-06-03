@@ -21,3 +21,15 @@ set(GENERAL_LIBS ROOT::Physics ROOT::ROOTDataFrame ROOT::Tree ROOT::Hist ROOT::G
 
 add_executable(MINERvA_pi_single_charged_gibuu MINERvA_pi_single_charged_gibuu.cpp)
 target_link_libraries(MINERvA_pi_single_charged_gibuu PRIVATE ${GENERAL_LIBS} analysis)
+
+add_executable(gibuu2root gibuu2root.cpp)
+target_link_libraries(gibuu2root PRIVATE ROOT::Tree)
+target_compile_definitions(gibuu2root PRIVATE
+  BASEPATH="${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
+add_executable(build_jobcard build_jobcard.cpp)
+target_link_libraries(build_jobcard PRIVATE Boost::program_options)
+target_compile_definitions(build_jobcard PRIVATE
+  BASEPATH="${CMAKE_CURRENT_SOURCE_DIR}"
+)
