@@ -42,6 +42,15 @@ ROOT::RDF::RNode vars_define(ROOT::RDF::RNode df) {
                 auto had_system = InitNucleon + InitNeutrino - PrimaryLepton;
                 return had_system.M();
               },
+              {"InitNeutrino", "PrimaryLepton", "InitNucleon"})
+      .Define("W_rest",
+              [](const TLorentzVector &InitNeutrino,
+                 const TLorentzVector &PrimaryLepton,
+                 const TLorentzVector &InitNucleon) {
+                TLorentzVector rest_nuc(0, 0, 0, InitNucleon.M());
+                auto had_system = rest_nuc + InitNeutrino - PrimaryLepton;
+                return had_system.M();
+              },
               {"InitNeutrino", "PrimaryLepton", "InitNucleon"});
 }
 
@@ -54,7 +63,8 @@ struct TargetResult {
 
 TargetResult process_target(const std::vector<std::string> &files,
                             const std::array<double, 8> &Tk_bin_edges,
-                            const std::array<double, 15> &theta_bin_edges) {
+                            const std::array<double, 15> &theta_bin_edges,
+                            bool use_wrest) {
   ROOT::RDataFrame input("out_tree", files);
 #if ROOT_VERSION_CODE >= ROOT_VERSION(6, 30, 0)
   ROOT::RDF::Experimental::AddProgressBar(input);
@@ -63,12 +73,16 @@ TargetResult process_target(const std::vector<std::string> &files,
   auto n_events = input.Count();
 
   auto d_signal =
-      d.Filter([](double W) { return W < 1.4; }, {"W"}, "W < 1.4 GeV")
+      d.Filter(
+           [use_wrest](double W, double W_rest) {
+             return use_wrest ? (W_rest < 1.4) : (W < 1.4);
+           },
+           {"W", "W_rest"}, "W < 1.4 GeV")
           .Filter(
-              [](const NeutrinoEvent &event) {
-                return event.count_post(211) + event.count_post(-211) == 1;
-              },
-              {"EventRecord"}, "single charged pion")
+               [](const NeutrinoEvent &event) {
+                 return event.count_post(211) + event.count_post(-211) == 1;
+               },
+               {"EventRecord"}, "single charged pion")
           .Define("pion_p4",
                   [](const NeutrinoEvent &event) {
                     for (auto &&[id, particle] : event.post_range(211))
@@ -197,6 +211,8 @@ int main(int argc, char *argv[]) {
                      "GiBUU ROOT files for carbon target")(
       "input-hydrogen", po::value<std::vector<std::string>>()->multitoken(),
       "GiBUU ROOT files for hydrogen target")(
+      "use-wrest", po::bool_switch()->default_value(false),
+      "Use W_rest (target nucleon at rest) instead of W")(
       "output", po::value<std::string>()->default_value("output_pi_charged.root"),
       "Output ROOT file")("help", "produce help message");
   po::variables_map vm;
@@ -230,16 +246,19 @@ int main(int argc, char *argv[]) {
     carbon_files = vm["input-carbon"].as<std::vector<std::string>>();
   if (vm.count("input-hydrogen"))
     hydrogen_files = vm["input-hydrogen"].as<std::vector<std::string>>();
+  const bool use_wrest = vm["use-wrest"].as<bool>();
 
   TargetResult result_C{}, result_H{};
 
   if (!carbon_files.empty()) {
-    result_C = process_target(carbon_files, Tk_bin_edges, theta_bin_edges);
+    result_C = process_target(carbon_files, Tk_bin_edges, theta_bin_edges,
+                              use_wrest);
     std::println("Carbon: {} events (pre-cut) from {} files, n_runs={}",
                  result_C.n_events, carbon_files.size(), result_C.n_runs);
   }
   if (!hydrogen_files.empty()) {
-    result_H = process_target(hydrogen_files, Tk_bin_edges, theta_bin_edges);
+    result_H = process_target(hydrogen_files, Tk_bin_edges, theta_bin_edges,
+                              use_wrest);
     std::println("Hydrogen: {} events (pre-cut) from {} files, n_runs={}",
                  result_H.n_events, hydrogen_files.size(), result_H.n_runs);
   }
@@ -285,6 +304,10 @@ int main(int argc, char *argv[]) {
   std::println("chi2_Tk = {}", chi2_Tk);
   std::println("chi2_theta = {}", chi2_theta);
 
+  std::string plot_prefix = use_wrest ? "Tk_pi_charged_wrest" : "Tk_pi_charged";
+  std::string theta_prefix = use_wrest ? "theta_pi_charged_wrest" : "theta_pi_charged";
+  std::string cut_label = use_wrest ? " (W_{rest} < 1.4 GeV)" : " (W < 1.4 GeV)";
+
   auto output_file = std::make_unique<TFile>(
       vm["output"].as<std::string>().c_str(), "RECREATE");
   h_Tk_CH.Write("h_Tk_CH");
@@ -292,13 +315,14 @@ int main(int argc, char *argv[]) {
   h_Tk_data.Write("h_Tk_data");
   h_theta_data.Write("h_theta_data");
 
-  auto make_gi_label = [](double chi2, int nbins) {
+  auto make_gi_label = [&](double chi2, int nbins) {
     auto tex = std::make_unique<TLatex>();
     tex->SetNDC();
     tex->SetTextFont(42);
     tex->SetTextSize(0.04);
     std::stringstream ss;
-    ss << "GiBUU  #chi^{2}/NDF = " << std::round(chi2) << "/" << nbins;
+    ss << "GiBUU" << cut_label << "  #chi^{2}/NDF = " << std::round(chi2)
+       << "/" << nbins;
     tex->SetTitle(ss.str().c_str());
     return tex;
   };
@@ -307,14 +331,14 @@ int main(int argc, char *argv[]) {
   auto gi_theta = make_gi_label(chi2_theta, theta_nbins);
 
   do_plot({&h_Tk_data, (TH1 *)&h_Tk_CH, gi_Tk.get()},
-          "Tk_pi_charged",
+          plot_prefix.c_str(),
           "d#sigma/dT_{#pi} (10^{-38} cm^{2}/MeV/nucleon)",
           "Pion kinetic energy (MeV)",
           {0.14, 0.80, 0.55, 0.95}, 350., "MINERvA #pi^{#pm} Data", "HIST C",
           0, {.top = 0.04, .bottom = 0.12});
 
   do_plot({&h_theta_data, (TH1 *)&h_theta_CH, gi_theta.get()},
-          "theta_pi_charged",
+          theta_prefix.c_str(),
           "d#sigma/d#theta_{#pi} (10^{-38} cm^{2}/degree/nucleon)",
           "Pion angle (degree)",
           {0.14, 0.65, 0.45, 0.85}, 0., "MINERvA #pi^{#pm} Data", "HIST C",
